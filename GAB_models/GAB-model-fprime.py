@@ -134,7 +134,7 @@ if uw.mpi.rank == 0:
 ### file directory to store data
 
 if HPC_run == True:
-    simulation_directory = "fprime_{}dx-{}dy-{}dz".format(dx/1e3, dy/1e3, dz/1e3) + "{}PPC/".format(GPC**3)
+    simulation_directory = "kh0_NewMisfitCalc_{}dx-{}dy-{}dz".format(dx/1e3, dy/1e3, dz/1e3) + "{}PPC/".format(GPC**3)
 else:
     simulation_directory = "../simulations/"
 
@@ -744,7 +744,8 @@ if uw.mpi.rank == 0:
     ### remove duplicates if there are any
     recharge_data = recharge_data.drop_duplicates(subset=['X', 'Y'], keep='first')
 
-#     recharge_data = recharge_data[::100]
+
+    # recharge_data = recharge_data[::10]
 
 
 uw.mpi.comm.barrier()
@@ -756,12 +757,14 @@ uw.mpi.comm.barrier()
 recharge_E = recharge_data['X'].values
 recharge_N = recharge_data['Y'].values
 
+
 ### convert values from mm/yr to m/s
 recharge_vel = ((recharge_data['RechargeRates'].values * u.millimeter/u.year).to(u.meter/u.second).magnitude)
 
+### recharge std based on std of rr increasing as rr increase. Base STD of 5 mm / yr used
+recharge_vel_std = (recharge_vel / 4.) + ((0.1 * u.millimeter/u.year).to(u.meter/u.second).magnitude)
 
-### need to find std for recharge vel, currently using an order of magnitude
-recharge_vel_std = 10 * recharge_vel
+
 
 
 recharge_Z = interp_downsampled(np.c_[recharge_E, recharge_N])
@@ -770,7 +773,7 @@ recharge_xyz = np.c_[recharge_E, recharge_N, recharge_Z]
 recharge_xyz, swarm_recharge, index_recharge = sprinkle_observations(recharge_xyz, dz=10., return_swarm=True, return_index=True)
 
 
-if uw.mpi.rank == 0:
+if uw.mpi.rank == 0 and verbose:
     print("number of recharge observations = {}".format(recharge_xyz.shape[0]))
     print(f"Time to import recharge observations: {time()-ti} seconds")
 
@@ -788,12 +791,10 @@ if uw.mpi.rank == 0:
     gw_data = pd.read_csv(data_dir+"NGIS_groundwater_levels_to_2000_GAB.csv", usecols=(3,4,6,7,8,9))
 
 
+    ### only use data which has a gw level std value above some pre-defined level
+    # gw_data = gw_data[gw_data['gw_level_std'] > 2.5]
 
-
-#     gw_data = gw_data[gw_data['gw_level'] < 0.1]
-
-    ### only use data which as a std value above 0
-#     gw_data = gw_data[gw_data['gw_level_std'] > 0.0]
+    # gw_data = gw_data[gw_data['gw_level_std'] < 2.5] = 2.5
 
 
     ### remove data not within x bounds
@@ -804,7 +805,6 @@ if uw.mpi.rank == 0:
     ### remove duplicates if there are any
     gw_data = gw_data.drop_duplicates(subset=['easting', 'northing'], keep='first')
 
-#     gw_data = gw_data[::100]
 
 uw.mpi.comm.barrier()
 
@@ -817,9 +817,9 @@ gw_E, gw_N, gw_elevation, gw_depth, gw_level, gw_level_std = gw_data['easting'].
 
 
 gw_hydraulic_head = gw_elevation - gw_level
-gw_hydraulic_head_std = gw_level_std
+gw_hydraulic_head_std = gw_level_std + 5.
 gw_pressure_head = gw_depth - gw_level
-gw_pressure_head_std = gw_level_std
+gw_pressure_head_std = gw_level_std + 5.
 
 gw_Z = interp_downsampled(np.c_[gw_E, gw_N])
 
@@ -829,12 +829,44 @@ gw_xyz[:,2] -= gw_depth
 gw_xyz, swarm_gw, index_gw = sprinkle_observations(gw_xyz, dz=10., return_swarm=True, return_index=True)
 
 
-if uw.mpi.rank == 0:
+if uw.mpi.rank == 0 and verbose:
     print("number of groundwater pressure observations = {}".format(gw_xyz.shape[0]))
     print(f"Time to import pressure observations: {time()-ti} seconds")
 
-
 # %%
+def LnormMisfit(p, misfit):
+
+        misfitType = f'L{p}-Norm'
+
+        velocity_misfit = (np.abs(np.log10(recharge_vel) - np.log10(sim_vel))**p/np.abs(np.log10(recharge_vel_std))**p).sum() #/ recharge_vel.size
+
+        misfit += velocity_misfit
+
+        pressure_misfit = (np.abs(gw_pressure_head - sim_pressure_head)**p/gw_pressure_head_std**p).sum() # / gw_pressure_head.size
+
+        misfit += pressure_misfit
+
+        ### compare hydraulic conductivity
+        HC_misfit = (np.abs(np.log10(kh) - np.log10(kh0))**p).sum()
+
+        misfit += HC_misfit
+
+
+        ### Compare thermal conductivity
+        TC_misfit = (np.abs(kt - kt0)**p/dkt**p).sum()
+
+        misfit += TC_misfit
+
+
+
+        ### Compare heat production
+        HP_misfit = (np.abs(H - H0)**p/dH**p).sum()
+
+        misfit += HP_misfit
+
+        return misfitType, misfit, velocity_misfit, pressure_misfit, HC_misfit, TC_misfit, HP_misfit
+
+
 
 
 
@@ -948,72 +980,86 @@ def forward_model(x, niter=0):
                 break
 
 
-### compare to observations and determine misfit
-        misfit = np.array(0.0)
+        ### compare to observations and determine misfit
 
-#         sim_dTdz = temperatureField.fn_gradient[2].evaluate(swarm_dTdz)
-#         sim_dTdz = reduce_to_root(sim_dTdz, index_dTdz)
-#         if uw.mpi.rank == 0:
-#             sim_dTdz = -1.0*sim_dTdz.ravel()
-#             misfit += (((well_dTdz - sim_dTdz)**2/0.1**2).sum())/well_dTdz.size
-#             # print(((well_dTdz - sim_dTdz)**2/0.1**2).sum())
+        #         sim_dTdz = temperatureField.fn_gradient[2].evaluate(swarm_dTdz)
+        #         sim_dTdz = reduce_to_root(sim_dTdz, index_dTdz)
+        #         if uw.mpi.rank == 0:
+        #             sim_dTdz = -1.0*sim_dTdz.ravel()
+        #             misfit += (((well_dTdz - sim_dTdz)**2/0.1**2).sum())/well_dTdz.size
+        #             # print(((well_dTdz - sim_dTdz)**2/0.1**2).sum())
 
-    ### Determine velocity misfit
+        ### Determine velocity misfit
         sim_vel = uw.function.math.dot(velocityField, velocityField).evaluate(swarm_recharge)
         sim_vel = reduce_to_root(sim_vel, index_recharge)
-        if uw.mpi.rank == 0:
-            misfit += (((np.log10(recharge_vel) - np.log10(sim_vel))**2).sum())
-            # misfit += ((((np.log10(recharge_vel) - np.log10(sim_vel))**2)/np.log10(recharge_vel_std)**2).sum())/recharge_vel.size
-            # print((((np.log10(recharge_vel) - np.log10(sim_vel))**2)/np.log10(recharge_vel_std)**2).sum())
 
-            velocity_misfit = (((np.log10(recharge_vel) - np.log10(sim_vel))**2).sum())
-
-            if verbose == True:
-                # velocity_misfit = ((((np.log10(recharge_vel) - np.log10(sim_vel))**2)/np.log10(recharge_vel_std)**2).sum())/recharge_vel.size
-                print(f'Velocity misfit: {velocity_misfit}')
 
         ### Determine pressure misfit
         sim_pressure_head = gwHydraulicHead.evaluate(swarm_gw) - zCoordFn.evaluate(swarm_gw)
         sim_pressure_head = reduce_to_root(sim_pressure_head, index_gw)
-        if uw.mpi.rank == 0:
-            misfit += (((gw_pressure_head - sim_pressure_head)**2).sum())
-            # misfit += (((gw_pressure_head - sim_pressure_head)**2/gw_pressure_head_std**2).sum())/gw_pressure_head.size
 
-
-            # print(((gw_pressure_head - sim_pressure_head)**2/gw_pressure_head_std**2).sum())
-            pressure_misfit = (((gw_pressure_head - sim_pressure_head)**2).sum())
-
-            if verbose == True:
-                # pressure_misfit = (((gw_pressure_head - sim_pressure_head)**2/gw_pressure_head_std**2).sum())/gw_pressure_head.size
-                print(f'Pressure misfit: {pressure_misfit}')
-
+        misfit = np.array(0.0)
         ### compare priors
         if uw.mpi.rank == 0:
+            p_value = 1
 
-            ### Compare hydralic conductivity
-            misfit += ((np.log10(kh) - np.log10(kh0))**2).sum()
-            HC_misfit = ((np.log10(kh) - np.log10(kh0))**2).sum()
+            misfitType, misfit, velocity_misfit, pressure_misfit, HC_misfit, TC_misfit, HP_misfit  = LnormMisfit(p=p_value, misfit)
+
+            velMisfit.append(velocity_misfit)
+            pressureMisfit.append(pressure_misfit)
+            HCMisfit.append(HC_misfit)
+            totalMisfit.append(misfit)
+            # iteration.append(niter)
+
+            misfitData = pd.DataFrame()
+            misfitData['iteration'] = misfitData.index.values
+            misfitData['velMisfit'] = velMisfit
+            misfitData['pressureMisfit'] = pressureMisfit
+            misfitData['HCMisfit'] = HCMisfit
+            misfitData['totalMisfit'] = totalMisfit
+
+            misfitData.to_csv(simulation_directory + str(misfitType) + '-misfitdata.csv')
 
             if verbose == True:
+                print(f"Misfit Type: {misfitType}")
+                print(f'Velocity misfit: {velocity_misfit}')
+                print(f'Pressure misfit: {pressure_misfit}')
                 print(f'Hydraulic conductivity misfit: {HC_misfit}')
-                # print(f'kh: {kh}, kh0: {kh0}')
-
-            ### Compare thermal conductivity
-            misfit += ((kt - kt0)**2/dkt**2).sum()
-            TC_misfit = ((kt - kt0)**2/dkt**2).sum()
-
-            if verbose == True:
                 print(f'Thermal conductivity misfit: {TC_misfit}')
-                # print(f'kt: {kh}, kt0: {kh0}, dkt: {dkt}')
+                print(f'Heat production misfit: {HP_misfit}')
 
+                print(f"Total misfit: {misfit}")
 
-            ### Compare heat production
-            misfit += ((H - H0)**2/dH**2).sum()
-            HP_misfit = ((H - H0)**2/dH**2).sum()
+        misfit = np.array(0.0)
+
+        if uw.mpi.rank == 0:
+            p_value = 2
+            misfitType, misfit, velocity_misfit, pressure_misfit, HC_misfit, TC_misfit, HP_misfit  = LnormMisfit(p=p_value, misfit)
+
+            velMisfit.append(velocity_misfit)
+            pressureMisfit.append(pressure_misfit)
+            HCMisfit.append(HC_misfit)
+            totalMisfit.append(misfit)
+            # iteration.append(niter)
+
+            misfitData = pd.DataFrame()
+            misfitData['iteration'] = misfitData.index.values
+            misfitData['velMisfit'] = velMisfit
+            misfitData['pressureMisfit'] = pressureMisfit
+            misfitData['HCMisfit'] = HCMisfit
+            misfitData['totalMisfit'] = totalMisfit
+
+            misfitData.to_csv(simulation_directory + str(misfitType) + '-misfitdata.csv')
 
             if verbose == True:
+                print(f"Misfit Type: {misfitType}")
+                print(f'Velocity misfit: {velocity_misfit}')
+                print(f'Pressure misfit: {pressure_misfit}')
+                print(f'Hydraulic conductivity misfit: {HC_misfit}')
+                print(f'Thermal conductivity misfit: {TC_misfit}')
                 print(f'Heat production misfit: {HP_misfit}')
-                # print(f'H: {kh}, H0: {kh0}, dH: {dH}')
+
+                print(f"Total misfit: {misfit}")
 
 
 
@@ -1029,22 +1075,6 @@ def forward_model(x, niter=0):
                 # velocityField.save(simulation_directory+'velocityField_{:06d}.h5'.format(niter))
                 if uw.mpi.rank == 0:
                     # np.savetxt(simulation_directory + 'kh_{:06d}.txt'.format(niter), kh, delimiter=',')
-
-                    velMisfit.append(velocity_misfit)
-                    pressureMisfit.append(pressure_misfit)
-                    HCMisfit.append(HC_misfit)
-                    totalMisfit.append(misfit)
-                    # iteration.append(niter)
-
-                    misfitData = pd.DataFrame()
-                    misfitData['iteration'] = misfitData.index.values
-                    misfitData['velMisfit'] = velMisfit
-                    misfitData['pressureMisfit'] = pressureMisfit
-                    misfitData['HCMisfit'] = HCMisfit
-                    misfitData['totalMisfit'] = totalMisfit
-
-                    misfitData.to_csv(simulation_directory+'misfitdata.csv')
-
 
 
             niter += 1
@@ -1179,11 +1209,7 @@ else:
 
 mintree = cKDTree(minimiser_results)
 
-# +
-# test forward model
-# fm0 = forward_model(x)
-# fm1 = forward_model(x+dx)
-# print("finite difference = {}".format(fm1-fm0))
+
 
 
 
@@ -1208,7 +1234,15 @@ totalMisfit    = []
 # iteration      = []
 HCMisfit       = []
 
+# +
+#### test forward model
+# fm0 = forward_model(x)
+# fm1 = forward_model(x+dx)
+# print("finite difference = {}".format(fm1-fm0))
 
+
+#
+#
 ## Check gradient of variables in the forward model
 if hydraulicConductivityOnly == True:
     finite_diff_step = np.hstack([np.full_like(kh0, 1.)])
