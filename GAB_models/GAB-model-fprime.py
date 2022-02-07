@@ -833,38 +833,7 @@ if uw.mpi.rank == 0 and verbose:
     print("number of groundwater pressure observations = {}".format(gw_xyz.shape[0]))
     print(f"Time to import pressure observations: {time()-ti} seconds")
 
-# %%
-def LnormMisfit(p, misfit):
 
-        misfitType = f'L{p}-Norm'
-
-        velocity_misfit = (np.abs(np.log10(recharge_vel) - np.log10(sim_vel))**p/np.abs(np.log10(recharge_vel_std))**p).sum() #/ recharge_vel.size
-
-        misfit += velocity_misfit
-
-        pressure_misfit = (np.abs(gw_pressure_head - sim_pressure_head)**p/gw_pressure_head_std**p).sum() # / gw_pressure_head.size
-
-        misfit += pressure_misfit
-
-        ### compare hydraulic conductivity
-        HC_misfit = (np.abs(np.log10(kh) - np.log10(kh0))**p).sum()
-
-        misfit += HC_misfit
-
-
-        ### Compare thermal conductivity
-        TC_misfit = (np.abs(kt - kt0)**p/dkt**p).sum()
-
-        misfit += TC_misfit
-
-
-
-        ### Compare heat production
-        HP_misfit = (np.abs(H - H0)**p/dH**p).sum()
-
-        misfit += HP_misfit
-
-        return misfitType, misfit, velocity_misfit, pressure_misfit, HC_misfit, TC_misfit, HP_misfit
 
 
 
@@ -998,12 +967,44 @@ def forward_model(x, niter=0):
         sim_pressure_head = gwHydraulicHead.evaluate(swarm_gw) - zCoordFn.evaluate(swarm_gw)
         sim_pressure_head = reduce_to_root(sim_pressure_head, index_gw)
 
+        def LnormMisfit(p, misfit):
+            # global recharge_vel, sim_vel, recharge_vel_std, gw_pressure_head, sim_pressure_head, gw_pressure_head_std, kh, kh0, kt, kt0, dkt, H, H0, dH
+
+            misfitType = f'L{p}-Norm'
+
+            velocity_misfit = (np.abs(np.log10(recharge_vel) - np.log10(sim_vel))**p/np.abs(np.log10(recharge_vel_std))**p).sum() #/ recharge_vel.size
+
+            misfit += velocity_misfit
+
+            pressure_misfit = (np.abs(gw_pressure_head - sim_pressure_head)**p/gw_pressure_head_std**p).sum() # / gw_pressure_head.size
+
+            misfit += pressure_misfit
+
+            ### compare hydraulic conductivity
+            HC_misfit = (np.abs(np.log10(kh) - np.log10(kh0))**p).sum()
+
+            misfit += HC_misfit
+
+
+            ### Compare thermal conductivity
+            TC_misfit = (np.abs(kt - kt0)**p/dkt**p).sum()
+
+            misfit += TC_misfit
+
+
+
+            ### Compare heat production
+            HP_misfit = (np.abs(H - H0)**p/dH**p).sum()
+
+            misfit += HP_misfit
+
+            return misfitType, misfit, velocity_misfit, pressure_misfit, HC_misfit, TC_misfit, HP_misfit
+
         misfit = np.array(0.0)
         ### compare priors
         if uw.mpi.rank == 0:
             p_value = 1
-
-            misfitType, misfit, velocity_misfit, pressure_misfit, HC_misfit, TC_misfit, HP_misfit  = LnormMisfit(p=p_value, misfit)
+            misfitType, misfit, velocity_misfit, pressure_misfit, HC_misfit, TC_misfit, HP_misfit  = LnormMisfit(p=p_value, misfit=misfit)
 
             velMisfit.append(velocity_misfit)
             pressureMisfit.append(pressure_misfit)
@@ -1031,10 +1032,10 @@ def forward_model(x, niter=0):
                 print(f"Total misfit: {misfit}")
 
         misfit = np.array(0.0)
-
+        ### compare priors
         if uw.mpi.rank == 0:
             p_value = 2
-            misfitType, misfit, velocity_misfit, pressure_misfit, HC_misfit, TC_misfit, HP_misfit  = LnormMisfit(p=p_value, misfit)
+            misfitType, misfit, velocity_misfit, pressure_misfit, HC_misfit, TC_misfit, HP_misfit  = LnormMisfit(p=p_value, misfit=misfit)
 
             velMisfit.append(velocity_misfit)
             pressureMisfit.append(pressure_misfit)
@@ -1068,16 +1069,16 @@ def forward_model(x, niter=0):
 
         comm.Bcast([misfit, MPI.DOUBLE], root=0)
 
-        if n_checkpoints:
-            if niter % n_checkpoints == 0:
-                # temperatureField.save(data_dir+'checkpoints/temperatureField_{:06d}.h5'.format(niter))
-                # gwHydraulicHead.save(data_dir+'checkpoints/hydraulicHeadField_{:06d}.h5'.format(niter))
-                # velocityField.save(simulation_directory+'velocityField_{:06d}.h5'.format(niter))
-                if uw.mpi.rank == 0:
-                    # np.savetxt(simulation_directory + 'kh_{:06d}.txt'.format(niter), kh, delimiter=',')
-
-
-            niter += 1
+        # if n_checkpoints:
+        #     if niter % n_checkpoints == 0:
+        #         # temperatureField.save(data_dir+'checkpoints/temperatureField_{:06d}.h5'.format(niter))
+        #         # gwHydraulicHead.save(data_dir+'checkpoints/hydraulicHeadField_{:06d}.h5'.format(niter))
+        #         # velocityField.save(simulation_directory+'velocityField_{:06d}.h5'.format(niter))
+        #         if uw.mpi.rank == 0:
+        #             # np.savetxt(simulation_directory + 'kh_{:06d}.txt'.format(niter), kh, delimiter=',')
+        #
+        #
+        #     niter += 1
 
         if uw.mpi.rank == 0:
             with open(simulation_directory+'minimiser_results.csv', 'a') as f:
@@ -1088,7 +1089,6 @@ def forward_model(x, niter=0):
                 print("\n rank {} in {:.2f} sec misfit = {}\n".format(uw.mpi.rank, time()-ti, misfit))
 
         return misfit
-
 
 # %%
 def metropolis_hastings(func, x0, nsim, burnin, x_scale=(1,1), ):
