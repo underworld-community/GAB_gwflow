@@ -1,16 +1,17 @@
-,Unnamed: 0,Name Aquifer/Aquitard,Base Surface,Top Surface,Hydrostratigraphy (2012 Atlas),Rock type,Layer name,Conductivity (m/s),ogia conductivity min (m/day),ogia conductivity max (m/day),Porosity (%Vol),Porosity error,Permeability (mD),Permeability error,Density (kg/m3),Density error,Heat production (W/m3),Heat production error,thermal conductivity,thermal conductivity error,a (T),mat index
-0,0,Topography,DEM,,,,AUSBATH09_AMG55_GDA94_500m_model_extent,0,0,0,0,0,0,0,0,0,0,0,0,0,0.1,0
-1,1,Shallow aquifer,Base Lake Eyre Fm,DEM,Aquifer,Sandstone,W050_EYRE_v3,,0.021,40,20,,900,,2500,,1.00E-06,,2,,0.1,1
-2,2,Lake Eyre,Base Cenozoic,Base Lake Eyre Fm,Aquifer,Sandstone,W080_BASE_CENOZOIC_v19_20km_ANU,,0.021,40,20,,900,,2500,,1.00E-06,,2,,0.1,2
-3,3,Winton-Mackunda,Base Mackunda Fm,Base Cenozoic,Partial Aquifer,"sand, silt, shale",W100_BASE_MACKUNDA_v13,8.81E-06,0.1,10,34.00714286,,912.4373742,,2500,,1.00E-06,,2,,0.1,3
-4,4,Rolling Downs,W210 BUNGIL,Base Mackunda Fm,Aquitard,"quartzose, siltstone, mudston",W210_BUNGIL_v8,,5.00E-03,4.56E-01,15,,120,,2500,,1.00E-06,,2,,0.1,4
-5,5,Cadna-owie-Hooray,W310 WESTBOURNE,W210 BUNGIL,Aquifer,"shale, siltstone, mudstone",W310_WESTBOURNE_v6,1.31E-06,1.00E-02,9.34E+00,16.27016352,,136.1302363,,2500,,1.00E-06,,2,,0.1,5
-6,6,Westbourne,W330 SPRINGBOK,W310 WESTBOURNE,Aquitard,"fine-grained sandstone interbedded with siltstone, claystone, minor coal.",W330_SPRINGBOK_v5,1.15E-06,6.75E-05,1.29E-03,14.5764959,,119.0725827,,2500,,1.00E-06,,2,,0.1,6
-7,7,Adori-Springbok,W410 SPUNCON,W330 SPRINGBOK,Aquifer,sandstone,W410_SPUNCON_v5,8.83E-06,1.15E-04,4.80E-03,22.3,,913.6061542,,2500,,1.00E-06,,2,,0.1,7
-8,8,Birkhead-Walloon,W510 HUTUP,W410 SPUNCON,Aquitard,"siltstone, mudstone, sandstone, minor coal",W510_HUTUP_v16,1.31E-06,3.49E-07,3.14E-02,13.88955901,,135.8689375,,2500,,1.00E-06,,2,,0.1,8
-9,9,Hutton,W540 EVERUP,W510 HUTUP,Aquifer,sandstone,W540_EVERUP_v11,4.41E-06,1.32E-04,1.00E+01,17.62954685,,456.891845,,2500,,1.00E-06,,2,,0.1,9
-10,10,Evergreen-Poolowanna,W580 PRECLOW,W540 EVERUP,Aquitard,"sandstone, carbonaceous mudstone, siltstone, minor coal",W580_PRECLOW_POOLOWANNA_v2,9.80E-07,1.58E-05,2.53E-04,14.70204082,,101.4815053,,2500,,1.00E-06,,2,,0.1,10
-11,11,Precipice,W610 BUNCON,W580 PRECLOW,Aquifer,quartzose sandstone,W610_BUNCON_BJ_v24,3.12E-06,1.04E-02,1.00E+02,15.84748974,,322.8758919,,2500,,1.00E-06,,2,,0.1,11
-12,12,Triassic Basins,W810_PCTOP,W610_BUNCON,variable,,W810_PCTOP_v3,,0.0001,0.0814,15,,200,,2500,,1.00E-06,,2,,0.1,12
-13,13,Permo-Carboniferous Basins,W910_BASEMENT,W810_PCTOP,variable,,W910_BASEMENT_v1,,0.0001,0.0748,15,,200,,2500,,1.00E-06,,3,,0.1,13
-14,14,Moho,AusMoho_grid,W910_BASEMENT,-,,AusMoho_grid,,0.00E+00,0.00E+00,5,,0,,2500,,1.00E-06,,3,,0.1,14
+mat index,Name Aquifer/Aquitard,Top Surface,Bottom Surface,Layer name OLD,Layer name,vshale_fileName,Hydrostratigraphy (2012 Atlas),Conductivity (m/s),ogia conductivity min (m/day),ogia conductivity max (m/day),Porosity (%Vol),Porosity error,Permeability (mD),Permeability error,Density (kg/m3),Density error,Heat production (W/m3),Heat production error,thermal conductivity,thermal conductivity error,a (T)
+,Topography,,,,,,,0,0,0,0,0,0,0,0,0,0,0,0,0,0.1
+0,Quaternary,DEM,W050 Eyre,AUSBATH09_AMG55_GDA94_500m_model_extent,AUSBATH09_AMG55_GDA94_500m_model_extent,,Aquifer,,0.021,40,20,,900,,2500,,1.00E-06,,2,,0.1
+1,Lake Eyre,Base Lake Eyre Fm,Base Cenozoic,W050_EYRE_v3,W050_EYRE_v18,average map for VShale 50km Gaussian_W050_EYRE -W080_BASE_CENOZOIC,Aquifer,,0.021,40,20,,900,,2500,,1.00E-06,,2,,0.1
+2,Winton-Mackunda,Base Cenozoic,Base Mackunda Fm,Base_Cenozoic_v19,W080_BASE_CENOZOIC_v23,average map for VShale 50km Gaussian_W080_BASE_CENOZOIC - W100_BASE_MACKUNDA,Partial Aquifer,8.81E-06,0.1,10,34.00714286,,912.4373742,,2500,,1.00E-06,,2,,0.1
+3,Rolling Downs,Base Mackunda Fm,W210 BUNGIL,W100_BASE_MACKUNDA_v13,W100_BASE_MACKUNDA_v23_from_isochore_OGIA,average map for VShale 50km Gaussian_W100_BASE_MACKUNDA - W130_COREENA,Aquitard,,5.00E-03,4.56E-01,15,,120,,2500,,1.00E-06,,2,,0.1
+4,Cadna-owie-Hooray,W210 BUNGIL,W310 WESTBOURNE,W210_BUNGIL_v8,W210_BUNGIL_v10_from_isochore_OGIA,average map for VShale 50km Gaussian_W210_BUNGIL - W220_MOOGA,Aquifer,1.31E-06,1.00E-02,9.34E+00,16.27016352,,136.1302363,,2500,,1.00E-06,,2,,0.1
+5,Westbourne,W310 WESTBOURNE,W330 SPRINGBOK,W310_WESTBOURNE_v6,W310_WESTBOURNE_from_isochore_v21_OGIA,average map for VShale 50km Gaussian_W310_WESTBOURNE -W330_SPRINGBOK,Aquitard,1.15E-06,6.75E-05,1.29E-03,14.5764959,,119.0725827,,2500,,1.00E-06,,2,,0.1
+6,Adori-Springbok,W330 SPRINGBOK,W410 SPUNCON,W330_SPRINGBOK_v5,W330_SPRINGBOK_v21_from_isochore_OGIA,average map for VShale 50km Gaussian_W330_SPRINGBOK - W410_SPUNCON,Aquifer,8.83E-06,1.15E-04,4.80E-03,22.3,,913.6061542,,2500,,1.00E-06,,2,,0.1
+7,Birkhead-Walloon,W410 SPUNCON,W510 HUTUP,W410_SPUNCON_v5,W410_SPUNCON_v8_from_isochore_OGIA,average map for VShale 50km Gaussian_W410_SPUNCON - W480_DURABILLA,Aquitard,1.31E-06,3.49E-07,3.14E-02,13.88955901,,135.8689375,,2500,,1.00E-06,,2,,0.1
+8,Hutton,W510 HUTUP,W540 EVERUP,W510_HUTUP_v16,W510_HUTUP_v22_from_isochore_OGIA,average map for VShale 50km Gaussian_W510_HUTUP - W540_EVERUP,Aquifer,4.41E-06,1.32E-04,1.00E+01,17.62954685,,456.891845,,2500,,1.00E-06,,2,,0.1
+9,Evergreen-Poolowanna,W540 EVERUP,W580 PRECLOW,W540_EVERUP_v11,W540_EVERGREEN_v20_from_isochore_OGIA,average map for VShale 50km Gaussian_W540_EVERUP - W580_PRECLOW,Aquitard,9.80E-07,1.58E-05,2.53E-04,14.70204082,,101.4815053,,2500,,1.00E-06,,2,,0.1
+10,Precipice,W580 PRECLOW,W610 BUNCON,W580_PRECLOW_POOLOWANNA_v2,W580_PRECLOW_v4_from_isochore_OGIA,average map for VShale 50km Gaussian_W580_PRECLOW - W580_BUNCON,Aquifer,3.12E-06,1.04E-02,1.00E+02,15.84748974,,322.8758919,,2500,,1.00E-06,,2,,0.1
+11,Triassic Basins,W610_BUNCON,W810_PCTOP,W610_BUNCON_BJ_v24,W610_BUNCON_v26,average map for VShale 50km Gaussian_W610_BUNCON - W810_PCTOP,variable,,0.0001,0.0814,15,,200,,2500,,1.00E-06,,2,,0.1
+12,Permo-Carboniferous Basins,W810_PCTOP,W910_BASEMENT,W810_PCTOP_v3,W810_PCTOP_v5_from_isochore,average map for VShale 50km Gaussian_W810_PCTOP - W910_BASEMENT,variable,,0.0001,0.0748,15,,200,,2500,,1.00E-06,,3,,0.1
+13,Basement,W910_BASEMENT,Moho,W910_BASEMENT_v1,W910_BASEMENT_v2,,,,8.64E-07,8.64E-07,5,,0,,2500,,1.00E-06,,3,,0.1
+14,Moho,Moho,,AusMoho_grid,AusMoho_grid,,,,,,,,,,,,,,,,
