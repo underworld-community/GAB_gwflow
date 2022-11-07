@@ -1,0 +1,36 @@
+#!/bin/bash
+
+
+#PBS -P q97
+#PBS -q normal
+#PBS -l walltime=01:00:00
+#PBS -l mem=800GB
+#PBS -l jobfs=50GB
+#PBS -l ncpus=480
+# PBS -l software=underworld
+#PBS -l wd
+#PBS -M ben.knight@monash.edu
+#PBS -m abe
+# PBS -N name
+
+#source /home/565/bk2562/UW/module_paths.sh
+source /home/565/bk2562/codes/UWGeodynamics_2.11.sh
+
+
+FOLDERNAME="GAB_MHmodel_test"
+
+OUTPUTPATH="/scratch/q97/bk2562/$FOLDERNAME/"
+
+SCRIPT="UW_ensemblePressure.py"
+
+
+mkdir $OUTPUTPATH
+
+cp ./$SCRIPT $OUTPUTPATH
+
+
+cd $OUTPUTPATH
+
+mpiexec -np ${PBS_NCPUS} python3 ./$SCRIPT
+
+ # mpiexec -np ${PBS_NCPUS} python3 ./$SCRIPT

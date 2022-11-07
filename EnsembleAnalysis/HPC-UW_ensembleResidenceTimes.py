@@ -7,6 +7,7 @@ import fnmatch
 import glob
 
 import underworld as uw
+from natsort import natsorted
 
 from mpi4py import MPI
 
@@ -21,14 +22,18 @@ rank = comm.Get_rank()
 ### define path files are stored in
 
 ### where the required files are stored
-path = r'/scratch/q97/bk2562/ensembleData/'
+
+data_dir = '/home/565/bk2562/models/GAB_data/data/'
+
+forwadModel_dir = r'/scratch/q97/bk2562/GAB_MHmodel_test/GAB_forwardModel/'
 
 
 ### where velocity field is stored
-checkpoints = r'/scratch/q97/bk2562/checkpoints/'
-# checkpoints = r'GAB-Notebooks/HPC_runs/'
+checkpoints = forwadModel_dir + r'checkpoints/'
 
-output = r'/scratch/q97/bk2562/ensembleResidenceTimes/'
+### where to save the esemble stats
+output = forwadModel_dir + r'ensembleResults/ResidenceTimes/'
+
 
 if uw.mpi.rank == 0:
     if not os.path.exists(output):
@@ -37,47 +42,21 @@ if uw.mpi.rank == 0:
 reps = None
 its  = None
 
+df_layers = pd.read_csv(data_dir + "GAB_surfaces/UW-GAB_layer_parameters.csv")
+LayerNames = df_layers['Name Aquifer/Aquitard']
+
 if uw.mpi.rank == 0 :
-    df_layers = pd.read_csv(path + 'UW-GAB_layer_parameters.csv')
-
-    df_layers['conductivity (m/day)'] = (df_layers['ogia conductivity min (m/day)'] + df_layers['ogia conductivity max (m/day)']) /2.
-
-    df_layers['Hydrostratigraphy'] = df_layers.iloc[:,6]
-
-
-    layerAttrs = df_layers[['mat index', 'Name Aquifer/Aquitard', 'conductivity (m/day)', "Hydrostratigraphy"]].iloc[1:-1].set_index('Name Aquifer/Aquitard').T.to_dict()
-
 
     #### load in the datasts
-
-    test0 = pd.read_csv(path + 'MH_output0.csv')
-
-    test1 = pd.read_csv(path +'MH_output1.csv')
-
-    frames = [test0, test1]
-
-    complete_set = pd.concat(frames)
+    complete_set = pd.read_csv(forwadModel_dir + 'MH_output.csv', index_col=[0])[4:]
 
 
-    ### rename headings of df
-    LayerNames = dict(zip(complete_set.iloc[:,1:15].columns,df_layers['Name Aquifer/Aquitard'].iloc[1:15]))
+    ### count duplicates in list. Calculates how many times to repeat file if it appears multiple times in the ensemble
 
-    complete_set = complete_set.rename(columns=LayerNames)
-
-    complete_set = complete_set.reset_index()
-
-    ### discard first 100 values due to low x_scale value
-    complete_set = complete_set.iloc[100:]
-
-    complete_set = complete_set.iloc[:,1:]
-
-
-    ### count duplicates in list
-
-    res=complete_set.iloc[:,1:15].reset_index().groupby(complete_set.iloc[:,1:15].columns.tolist())["index"].agg(list).reset_index().rename(columns={"index": "duplicated"})
+    res=complete_set.iloc[:,0:14].reset_index().groupby(complete_set.iloc[:,0:14].columns.tolist())["index"].agg(list).reset_index().rename(columns={"index": "duplicated"})
     res.index=res["duplicated"].str[0].tolist()
     res["duplicated"]=res["duplicated"].str[1:]
-    res['no. of dups'] = complete_set.iloc[:,1:15].groupby(complete_set.iloc[:,1:15].columns.tolist()).size().reset_index().rename(columns={0:'count'})['count'].values
+    res['no. of dups'] = complete_set.iloc[:,0:14].groupby(complete_set.iloc[:,0:14].columns.tolist()).size().reset_index().rename(columns={0:'count'})['count'].values
 
     res = res.sort_index()
 
@@ -87,24 +66,29 @@ if uw.mpi.rank == 0 :
 
     print('loaded in data')
 
+    print('its = {}, sum(reps) = {}'.format(its, sum(reps)))
+
 reps = uw.mpi.comm.bcast(reps, root=0)
 its  = uw.mpi.comm.bcast(its, root=0)
 
+comm.barrier()
+
+
+if its != sum(reps):
+    sys.exit("Sum of reps does not equal number of iterations")
+
 ### load the points on first rank then scatter evenly across CPUs
 if rank == 0:
-    ### a for number of reps for each it
-    a = 0
-    ### j for column in np array to update
-    j = 0
-
     ### load the data
-    x        = np.ascontiguousarray(np.load(checkpoints + 'allStreamlinePoints.npy')[:,0])
-    y        = np.ascontiguousarray(np.load(checkpoints + 'allStreamlinePoints.npy')[:,1])
-    z        = np.ascontiguousarray(np.load(checkpoints + 'allStreamlinePoints.npy')[:,2])
+    x        = np.ascontiguousarray(np.load(forwadModel_dir + 'allStreamlinePoints.npy')[:,0])
+    y        = np.ascontiguousarray(np.load(forwadModel_dir + 'allStreamlinePoints.npy')[:,1])
+    z        = np.ascontiguousarray(np.load(forwadModel_dir + 'allStreamlinePoints.npy')[:,2])
     mat      = np.repeat(np.arange(0,14, dtype='float64'), (len(x)/14))
 
     ### store all the data
-    allData = np.zeros((len(x), its))
+    allRTData     = np.zeros((x.shape[0], its))*np.nan
+    allVelData    = np.zeros((x.shape[0], its))*np.nan
+    allLengthData = np.zeros((x.shape[0], its))*np.nan
 
 
     split      = np.array_split(mat,size,axis = 0)
@@ -112,9 +96,6 @@ if rank == 0:
     split_disp = np.insert(np.cumsum(split_size), 0, 0)[0:-1]
 
 else:
-#Create variables on other cores
-    a = None
-    j = None
     mat = None
     x   = None
     y   = None
@@ -171,22 +152,27 @@ Ycoords = np.linspace(ymin,ymax,Ny)
 
 grid = pv.StructuredGrid()
 
-grid.points = h5py.File(glob.glob(checkpoints + 'mesh*')[0], 'r')['vertices'][:]
+grid.points = h5py.File(glob.glob(forwadModel_dir + 'mesh*')[0], 'r')['vertices'][:]
 
 grid.dimensions = Nx+1, Ny+1, Nz+1
 
 comm.barrier()
 
 
+### a for number of reps for each it
+a = 0
+### j for column in np array to update
+j = 0
+
 ### loop over the ensemble loading in the velocity field on each cpu and calculate streamlines
-for file in sorted(glob.glob(checkpoints + '*velocity*')):
+for file in natsorted(glob.glob(checkpoints + 'velocityField*')):
     grid["velocity"] = h5py.File(file, 'r')['data'][:]
     grid.set_active_vectors("velocity")
 
 
-    length_local = np.zeros((len(points)))
-    velocity_local = np.zeros((len(points)))
-    residenceTime_local = np.zeros((len(points)))
+    length_local = np.zeros((len(points)))*np.nan
+    velocity_local = np.zeros((len(points)))*np.nan
+    residenceTime_local = np.zeros((len(points)))*np.nan
 
 
 
@@ -212,10 +198,10 @@ for file in sorted(glob.glob(checkpoints + '*velocity*')):
 
     if rank == 0:
     ### creates dummy data on all nodes to store the surface
-        length         = np.zeros((sum(sendcounts)), dtype='float64')
-        velocity       = np.zeros((sum(sendcounts)), dtype='float64')
-        residenceTime  = np.zeros((sum(sendcounts)), dtype='float64')
-        matIndex       = np.zeros((sum(sendcounts)), dtype='float64')
+        length         = np.zeros((sum(sendcounts)), dtype='float64')*np.nan
+        velocity       = np.zeros((sum(sendcounts)), dtype='float64')*np.nan
+        residenceTime  = np.zeros((sum(sendcounts)), dtype='float64')*np.nan
+        matIndex       = np.zeros((sum(sendcounts)), dtype='float64')*np.nan
     else:
         length        = None
         velocity      = None
@@ -233,24 +219,41 @@ for file in sorted(glob.glob(checkpoints + '*velocity*')):
     comm.barrier()
 
     if rank == 0:
-        data      = np.zeros((matIndex.shape[0], 4))
+        data      = np.zeros((matIndex.shape[0], 4))*np.nan
         data[:,0] = length
         data[:,1] = velocity
         data[:,2] = residenceTime
         data[:,3] = matIndex
 
-        np.save(output + os.path.basename(file)[:-3] +'-residenceTimeData', data)
+        if (np.isnan(data).any()):
+            sys.exit("NaN detected in resident time data")
+        else:
+            np.save(output + os.path.basename(file)[:-3] +'-residenceTimeData', data)
 
+        start = j
+        end   = j+reps[a]
 
+        allRTData[:,start:end]  = np.transpose([residenceTime] * reps[a])
+        allVelData[:,start:end] = np.transpose([velocity] * reps[a])
+        allLengthData[:,start:end] = np.transpose([length] * reps[a])
 
-        for x in range(0, reps[a]):
-            allData[:,j] = data[:,2]
-            j +=1
-
+        j+=reps[a]
         a+= 1
+
+        print(file + ' imported')
 
     comm.barrier()
 
 
 if rank == 0:
-    np.save(output + 'allResidenceTimeData', allData)
+    if (np.isnan(allRTData).any()):
+        sys.exit("NaN detected in all resident time data")
+    np.save(output + 'allResidenceTimeData', allRTData)
+
+    if (np.isnan(allVelData).any()):
+        sys.exit("NaN detected in velocity data")
+    np.save(output + 'allVelocityData', allVelData)
+
+    if (np.isnan(allLengthData).any()):
+        sys.exit("NaN detected in velocity data")
+    np.save(output + 'allLengthData', allLengthData)

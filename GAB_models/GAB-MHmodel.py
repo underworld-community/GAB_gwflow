@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # coding: utf-8
-# %%
 
 # # GAB model: groundwater + heat flow
 #
@@ -11,7 +10,7 @@
 # - $k_T$: thermal conductivity (W/m/K)
 # - $H$: rate of heat production (W/m$^3$)
 
-# %%
+# In[ ]:
 
 
 import underworld as uw
@@ -30,61 +29,84 @@ import underworld.visualisation as vis
 import matplotlib.pyplot as plt
 
 
-import argparse
 from time import time
 
 from mpi4py import MPI
 comm = MPI.COMM_WORLD
-
-### additional requirements, may need to be installed
-import xarray as xr
-import rioxarray
-
-
-
-startTiming   = time()
-
-# %%
 
 
 ### convert between units
 from pint import UnitRegistry
 u = UnitRegistry()
 
+### additional requirements, may need to be installed
+import xarray as xr
+import rioxarray
+import pyvista as pv
 
-# %%
+
+
+startTiming   = time()
+
+
+# HPC_run check to change between resolutions and directories quickly
+
+# In[ ]:
 
 
 hydraulicConductivityOnly = True
 
-HPC_run = True
+if uw.mpi.size == 1:
+    HPC_run = False
+else:
+    HPC_run = True
 
-BURNIN = 50
-NSIM   = 500
+
+
+
+
+# Set key parameters for the MH algorithm
+
+# In[ ]:
+
+### number of simulations
+NSIM   = 669
+
+BURNIN = 0
+
+
 #### Tempering required for models due to high misfit
 TEMPERING = 10e3
+
 ### sigma to be used by the model, however MH includes an adaptive sigma to keep acceptance rate between 20 and 50 %
-sigma  = 0.1
+sigma  = 2.
+
 ### adapt sigma every nth interval to keep acceptance rate between 20 and 50 %
-tune_interval = 100
+tune_interval = 0
+
+### If using surrogate info
+surrogate = False
+
+# Set key parameters for the model
+
+# In[ ]:
 
 
-
-# %%
-
-
+### will write to the output file
 verbose = True
+
+### set to 1 or 'True' to store model outputs
 n_checkpoints = 1
 
 ###### Gauss point count, produces a total particles per cell of GPC ** model dimensions
 #### Gauss point count of up to 4 seems to prevent the model from crashing.
 if HPC_run == True:
-    ### used for swarm for initial material distribution
+    ### used for initial material distribution on the swarm
     GPC = 4
     ### used for swarm that does the solve
     GPC_solver = 2
 else:
-    ### used for swarm for initial material distribution
+    ### used for initial material distribution on the swarm
     GPC = 2
     ### used for swarm that does the solve
     GPC_solver = 2
@@ -92,9 +114,12 @@ else:
 
 
 
-# ## Import datasets
 
-# %%
+# # Import datasets
+#
+# ###### Directories where data is stored
+
+# In[ ]:
 
 
 ### directory of stored data
@@ -113,12 +138,15 @@ surface_filename_npz = numpy_directory + "{:s}.npz"
 surface_filename_tiff = geotiff_directory + "{:s}.tiff"
 
 
-df_layers = pd.read_csv(data_dir + "GAB_surfaces/UW-GAB_layer_parameters.csv")
+
+
 
 
 # ## Set up model dimensions and parameters
+#
+# Change the xmin, xmax etc values to the area of interest
 
-# %%
+# In[ ]:
 
 
 Tmin = 298.0
@@ -137,6 +165,16 @@ else:
 # dx, dy, dz = 10e3, 10e3, 50
 Nx, Ny, Nz = int((xmax-xmin)/dx), int((ymax-ymin)/dy), int((zmax-zmin)/dz)
 
+
+
+
+
+
+
+
+# In[ ]:
+
+
 if uw.mpi.rank == 0:
     print(f'Particles per cell: {GPC ** 3}')
 
@@ -145,26 +183,71 @@ if uw.mpi.rank == 0:
     print(f'Total particles: {Nx*Ny*Nz*(GPC**3)}')
 
 
-### file directory to store data
+# ### file directory to store model outputs
+
+# In[ ]:
 
 if HPC_run == True:
-    simulation_directory = "MHModel-{}TuneInterval_newkh0-{}Burnin_{}Nsims-{}Tempering_{}dx-{}dy-{}dz_".format(tune_interval, BURNIN, NSIM, TEMPERING, dx/1e3, dy/1e3, dz/1e3) + "{}PPC/".format(GPC_solver**3)
+    simulation_directory = r'/scratch/q97/bk2562/GAB_MHmodel_test/GAB_forwardModel/' # os.getcwd() + r'/GAB_forwardModel/'#"/newMHModelTest-{}TuneInterval_newkh0-{}Burnin_{}Nsims-{}Tempering_{}dx-{}dy-{}dz_".format(tune_interval, BURNIN, NSIM, TEMPERING, dx/1e3, dy/1e3, dz/1e3) + "{}PPC/".format(GPC_solver**3)
 else:
-    simulation_directory = "../MH_timingTest/"
+    simulation_directory = r'/scratch/q97/bk2562/GAB_MHmodel_test/GAB_forwardModel/' # os.getcwd() + r'GAB_forwardModel/' # "/newMHModelTest-{}TuneInterval_newkh0-{}Burnin_{}Nsims-{}Tempering_{}dx-{}dy-{}dz_".format(tune_interval, BURNIN, NSIM, TEMPERING, dx/1e3, dy/1e3, dz/1e3) + "{}PPC/".format(GPC_solver**3)
+
+
+
+if os.path.exists(simulation_directory):
+    restart = True
+    MH_data = pd.read_csv(simulation_directory + 'MH_output.csv', index_col=[0]).dropna()
+    niter = len(MH_data)
+    ### get last row of the MH output
+    restart_vales = MH_data.iloc[-1][0:14].values
+    ### If it is a restart BURNIN is changed to 0 (in case it's not already set to 0)
+    BURNIN = 0
+    naccept = np.nansum(MH_data['acceptance'].values)
+else:
+    restart = False
+    niter = 0
+    naccept = 0
+
 
 if uw.mpi.rank == 0:
     if not os.path.exists(simulation_directory):
         os.makedirs(simulation_directory)
-
+        print('Created save directory')
 
 if uw.mpi.rank == 0 and n_checkpoints == 1:
     if not os.path.exists(simulation_directory+'checkpoints/'):
         os.makedirs(simulation_directory+'checkpoints/')
+        print('Created checkpoint directory')
 
 
-# ## Create numpy arrays of datasets
 
-# %%
+
+if uw.mpi.rank == 0:
+    print(niter, restart)
+
+
+# ### df_layers contains key information of the model in a csv file
+
+# In[ ]:
+
+
+df_layers = pd.read_csv(data_dir + "GAB_surfaces/UW-GAB_layer_parameters.csv")
+
+
+# ### Create numpy arrays of datasets
+#
+
+# Key info stored in the csv file:
+# - kh0 = hydraulic conductivity
+# - kt0 = thermal conductivity
+# - a =
+# - H = heat production
+# - porisityData = Porosity
+# - LayerNames = names of lithological layers in the model
+#
+# These can either be from the dataframe, or can be passed as numpy arrays/lists
+
+# In[ ]:
 
 
 matIndex = np.int32(df_layers['mat index'].iloc[1:-1].values)
@@ -195,12 +278,14 @@ LayerNames = list(df_layers['Layer name'].iloc[1:].values)
 # dH = df_layers['Heat production error'][1:-1]
 
 
+
 # ## Set up the mesh
+
+# In[ ]:
+
+
 #
 # Initialise a Q1 finite element mesh and mesh variables.
-
-# %%
-
 
 deformedmesh = True
 elementType = "Q1"
@@ -229,15 +314,22 @@ Zcoords = np.unique(coords[:,2])
 nx, ny, nz = Xcoords.size, Ycoords.size, Zcoords.size
 
 
-# ## Deform mesh to surface & basement surfaces
+
+# # Deform mesh to surface & basement surfaces
 #
 # We want to deform the $z$-axis spacing so that the surface of the mesh is draped over the topography at the top and the basement rocks at the base.
+#
+#
+#
+# The topography (topo_interp) and basement (basement_interp) filenames will have to be changed when changing the region
 
-# %%
+# In[ ]:
 
 
 topo_interp = None
 basement_interp = None
+
+
 if uw.mpi.rank == 0:
 
 
@@ -289,16 +381,13 @@ with mesh.deform_mesh():
 
 # ## Set up the types of boundary conditions
 #
-# Set the left, right and bottom walls such that flow cannot pass through them, only parallel.
-# In other words for groundwater head $h$:
+# - A Neumann boundary condition is applied to the side and bottom boundaries, which allows inflow and outflow but the total flux is 0.
+# - The top pressure boundary condition is set to the smoothed topopgraphic surface
 #
-# $ \frac{\partial h}{\partial x}=0$ : left and right walls
-#
-# $ \frac{\partial h}{\partial y}=0$ : bottom wall
-#
-# This is only solvable if there is topography or a non-uniform upper hydraulic head boundary condition.
 
-# %%
+# In[ ]:
+
+
 
 
 
@@ -320,7 +409,7 @@ temperatureBC = uw.conditions.DirichletCondition( variable        = temperatureF
                                                   indexSetsPerDof = (topWall+bottomWall))
 
 
-# %%
+# In[ ]:
 
 
 gwHydraulicHead.data[:] = 0.
@@ -340,7 +429,7 @@ initial_temperature = linear_gradient*(Tmax - Tmin) + Tmin
 initial_temperature = np.clip(initial_temperature, Tmin, Tmax)
 
 
-# %%
+# In[ ]:
 
 
 gwHydraulicHead.data[:]  = initial_pressure.reshape(-1,1)
@@ -357,8 +446,12 @@ temperatureField.data[bottomWall] = Tmax
 
 
 # ### Import water table surface
+#
+# The water table surface file name and directory will need to be changed when modelling a different area
 
-# %%
+# In[ ]:
+
+
 
 
 rgi_wt = None
@@ -390,19 +483,22 @@ gwHydraulicHead.data[:] = zCoordFn.evaluate(mesh)
 gwHydraulicHead.data[topWall] += (-wt_interp).reshape(-1,1)
 
 
-# ## Set up particle swarm
-#
+
+# ### Set up particle swarm which will store the material properties
+
+# In[ ]:
 
 
-# %%
-# High PPC swarm to capture layers better within the model
+# High initial PPC swarm to load the layers in a high resolution
 
 swarm0         = uw.swarm.Swarm( mesh=mesh )
 swarmLayout0   = uw.swarm.layouts.PerCellGaussLayout(swarm=swarm0,gaussPointCount=GPC)
 swarm0.populate_using_layout( layout=swarmLayout0 )
 
 
-# %%
+# In[ ]:
+
+
 
 
 materialIndex0           = swarm0.add_variable( dataType="int",    count=1 )
@@ -412,25 +508,17 @@ heatProduction0          = swarm0.add_variable( dataType="double", count=1 )
 a_exponent0              = swarm0.add_variable( dataType="double", count=1 )
 
 
-
-# # find cell centroids (parallel-safe, but need to accelerate this bit.)
-
-# for cell in range(0, mesh.elementsLocal):
-#     mask_cell = swarm.owningCell.data == cell
-#     idx_cell  = np.nonzero(mask_cell)[0]
-#     cell_centroid = swarm.data[idx_cell].mean(axis=0)
-#     cellCentroid.data[idx_cell] = cell_centroid
-
-# ### list comprehension version, may be some speed-up?
-# cellCentroid.data[:] = np.array([(swarm.data[np.nonzero(swarm.owningCell.data == cell)[0]]).mean(axis=0) for cell in range(0, mesh.elementsLocal)])
-
-# %%
-
-
-# Create a swarm for the solver
+# ## Set up particle swarm for solver
+#
 # Each cell contains particles that _must_ be assigned isotropic thermal and hydraulic properties.
 #
-# > __Four__ particles per cell seems to prevent the model from crashing.
+# > A Gauss Point Count (GPC) of __Four__ maximum (64 particles per cell) seems to prevent the model from crashing.
+# >> This is asigned through the GPC_solver variable
+
+# In[ ]:
+
+
+
 
 swarm         = uw.swarm.Swarm( mesh=mesh )
 swarmLayout   = uw.swarm.layouts.PerCellGaussLayout(swarm=swarm, gaussPointCount=GPC_solver)
@@ -447,10 +535,10 @@ heatProduction          = swarm.add_variable( dataType="double", count=1 )
 a_exponent              = swarm.add_variable( dataType="double", count=1 )
 
 
-
 # ## Import geological surfaces
 #
-# Assign a material index for all cell centroids which lie between two surfaces
+# - Assign a material index for particles that lie below a surface.
+# - Is a 'layered' model, where all material below the surface is updated. Therefore the layer ordering _must_ be from top to bottom.
 #
 # ## Assign material properties
 #
@@ -463,11 +551,8 @@ a_exponent              = swarm.add_variable( dataType="double", count=1 )
 # - $\kappa_h$ : hydraulic diffusivity
 # - $\kappa_t$ : thermal diffusivity
 
-# %%
+# In[ ]:
 
-
-#### set all material to basement material initially
-#index = df_layers['mat index'][df_layers['Base Surface'].str.contains('basement', case=False)].iloc[0]
 
 ### set all material to top layer initially
 index = matIndex[0]
@@ -502,93 +587,25 @@ porosity.data[:] = porosityData[index] #(df_layers['Porosity (%Vol)'].iloc[index
 
 # # Cell centroid method
 
-# %%
 
+# This line of code will have to be modified when modelling a different area:
+#
+# 'row = df_layers.loc[df_layers['mat index'] == index]'
+#
+# To where layer names are stored to load in the correct files for that layers surface
+#
+#
+# The block below loads in the surfaces from top to bottom and updates the material properties accordingly.
+#
+#
 
-# # In[19]:
-
-# #
-
-# mask_layer = np.ones(swarm.data.shape[0], dtype=bool)
-
-
-
-
-# ## starting from the surface and going deeper with each layer
-# ## skip topography as mesh is already deformed to topo
-# for index in df_layers[1:-1].index[:]:
-#     row = df_layers.loc[index]
-
-#     # load surface
-#     layer_interp = None
-#     if uw.mpi.rank == 0:
-
-#         with rioxarray.open_rasterio(surface_filename_tiff.format(row['Layer name'])) as npz:
-#             layer_interp = RegularGridInterpolator((np.flipud(npz.sel(band=1).y.data), npz.sel(band=1).x.data), np.flipud(npz.sel(band=1).data), bounds_error=False)
-
-
-#     uw.mpi.comm.barrier()
-
-#     layer_interp = uw.mpi.comm.bcast(layer_interp, root=0)
-
-#     uw.mpi.comm.barrier()
-
-# #     ### interpolate surface to cell centroids
-#     z_interp = layer_interp((cellCentroid.data[:,1], cellCentroid.data[:,0]))
-#     z_interp_mesh = layer_interp((mesh.data[:,1], mesh.data[:,0]))
-
-# ###     assign index to swarm particles which are below the current surface
-# ###     if they are above the surface then we are done.
-
-
-#     mask_layer = cellCentroid.data[:,2] < z_interp
-#     mask_layer_mesh = mesh.data[:,2] < z_interp_mesh
-
-#     ### assign material variables
-#     materialIndex.data[mask_layer] = index
-
-
-#     ### add in layer properties
-#     ### Hydraulic conductivity in log10 scale
-#     # fn_hydraulicDiffusivity.data[mask_layer] = ((np.mean((df_layers['ogia conductivity max (m/day)'].iloc[index],df_layers['ogia conductivity min (m/day)'].iloc[index]))  * u.meter/u.day).to(u.meter/u.second).magnitude)
-
-#     hydraulicDiffusivity.data[mask_layer] = ((np.mean((df_layers['ogia conductivity max (m/day)'].iloc[index],df_layers['ogia conductivity min (m/day)'].iloc[index]))  * u.meter/u.day).to(u.meter/u.second).magnitude)
-
-#     # print(hydraulicDiffusivity.data[mask_layer].min())
-
-
-#     thermalDiffusivity.data[mask_layer] = df_layers['thermal conductivity'].iloc[index]
-
-#     a_exponent.data[mask_layer] = df_layers['a (T)'].iloc[index]
-
-#     ### heat production convert to micro
-#     heatProduction.data[mask_layer] = (df_layers['Heat production (W/m3)'].iloc[index])
-
-#     porosity.data[mask_layer_mesh] = (df_layers['Porosity (%Vol)'].iloc[index]) / 100 # from % to a value between 0 and 1
-
-
-#     if uw.mpi.rank == 0:
-#         print("Layer {:2d}  {}  ({})".format(index, row['Name Aquifer/Aquitard'], row['Layer name']))
-
-# fn_hydraulicDiffusivity.data[:] = hydraulicDiffusivity.data[:].copy()
-
-# if uw.mpi.rank ==0 and verbose:
-#     print(np.isin(np.unique(fn_hydraulicDiffusivity.data), np.unique(hydraulicDiffusivity.data)))
-
-
-# # Calculate mean of mixed cells
-# The mean is calculated for cells with mixed hydraulic diffusivity values
-
-# %%
+# In[ ]:
 
 
 mask_layer = np.ones(swarm.data.shape[0], dtype=bool)
 
 
-
-
 ## starting from the surface and going deeper with each layer
-## skip topography as mesh is already deformed to topo
 for index in matIndex:
     row = df_layers.loc[df_layers['mat index'] == index]
 
@@ -631,18 +648,6 @@ for index in matIndex:
     materialMesh.data[mask_layer_mesh] = index
 
 
-    # ### add in layer properties
-    # hydraulicDiffusivity0.data[mask_layer0] = ((((df_layers['ogia conductivity max (m/day)'].iloc[index],df_layers['ogia conductivity min (m/day)'].iloc[index])/2.)  * u.meter/u.day).to(u.meter/u.second).magnitude)
-
-
-    # thermalDiffusivity0.data[mask_layer0] = df_layers['thermal conductivity'].iloc[index]
-
-    # a_exponent0.data[mask_layer0] = df_layers['a (T)'].iloc[index]
-
-    # heatProduction0.data[mask_layer0] = (df_layers['Heat production (W/m3)'].iloc[index])
-
-    # porosity.data[mask_layer_mesh] = (df_layers['Porosity (%Vol)'].iloc[index]) / 100 # from % to a value between 0 and 1
-
     ### add in layer properties
     hydraulicDiffusivity0.data[mask_layer0] = kh0[index] #((((df_layers['ogia conductivity max (m/day)'].iloc[index].values,df_layers['ogia conductivity min (m/day)'].iloc[index].values)/2.)  * u.meter/u.day).to(u.meter/u.second).magnitude)
 
@@ -660,7 +665,7 @@ for index in matIndex:
     if uw.mpi.rank == 0:
         print("Layer {:2d}  {}  ({})".format(index, row['Name Aquifer/Aquitard'].iloc[0], row['Layer name'].iloc[0]))
 
-# determine mean of cells to produce uniform cells
+# determine mean of cells to produce uniform cells on solver swarm
 fn_hydraulicDiffusivity.data[:,0] = np.repeat((np.mean((np.split(hydraulicDiffusivity0.data[:,0], np.unique(swarm0.owningCell.data[:,0], return_index = True)[1])[1:]), axis=1)), GPC_solver**mesh.dim)
 
 thermalDiffusivity.data[:,0] = np.repeat((np.mean((np.split(thermalDiffusivity0.data[:,0], np.unique(swarm0.owningCell.data[:,0], return_index = True)[1])[1:]), axis=1)), GPC_solver**mesh.dim)
@@ -670,11 +675,127 @@ a_exponent.data[:,0] = np.repeat((np.mean((np.split(a_exponent0.data[:,0], np.un
 
 
 
+### Save dataset
 
-#
-#
+# # dummy mesh variable
+phiField        = mesh.add_variable( nodeDofCount=1 )
 
-# %%
+rankField = mesh.add_variable( nodeDofCount=1 )
+rankField.data[:] = uw.mpi.rank
+
+xdmf_info_mesh  = mesh.save(simulation_directory+'mesh.h5')
+xdmf_info_swarm = swarm.save(simulation_directory+'swarm.h5')
+
+xdmf_info_matIndex = materialIndex.save(simulation_directory+'materialIndex.h5')
+materialIndex.xdmf(simulation_directory+'materialIndex.xdmf', xdmf_info_matIndex, 'materialIndex', xdmf_info_swarm, 'TheSwarm')
+
+for xdmf_info,save_name,save_object in [# (xdmf_info_mesh, 'velocityField', velocityField),
+                                        (xdmf_info_mesh, 'hydraulicHeadField', gwHydraulicHead),
+                                        # (xdmf_info_mesh, 'pressureField', pressureField),
+                                        # (xdmf_info_mesh, 'temperatureField', temperatureField),
+                                        # (xdmf_info_mesh, 'heatflowField', heatflowField),
+                                        (xdmf_info_mesh, 'rankField', rankField),
+                                        (xdmf_info_mesh, 'materialMesh', materialMesh),
+                                        (xdmf_info_swarm, 'materialIndexSwarm', materialIndex),
+                                        (xdmf_info_swarm, 'hydraulicDiffusivitySwarm', fn_hydraulicDiffusivity),
+                                        # (xdmf_info_swarm, 'thermalDiffusivitySwarm', thermalDiffusivity),
+                                        # (xdmf_info_swarm, 'heatProductionSwarm', heatProduction),
+                                        ]:
+
+    xdmf_info_var = save_object.save(simulation_directory+save_name+'.h5')
+    save_object.xdmf(simulation_directory+save_name+'.xdmf', xdmf_info_var, save_name, xdmf_info, 'TheMesh')
+
+    if save_name.endswith("Swarm"):
+        # project swarm variables to the mesh
+        hydproj = uw.utils.MeshVariable_Projection(phiField, save_object, swarm)
+        hydproj.solve()
+
+        field_name = save_name[:-5]+'Field'
+        xdmf_info_var = phiField.save(simulation_directory+field_name+'.h5')
+        phiField.xdmf(simulation_directory+field_name+'.xdmf', xdmf_info_var, field_name, xdmf_info_mesh, "TheMesh")
+
+
+
+# #### visualise in PyVista to make sure model has been set up correctly
+#
+# Only do this locally (when on 1 CPU), not on the HPC
+
+# In[ ]:
+
+
+if uw.mpi.size == 1:
+    ### create a structured grid
+    grid = pv.StructuredGrid()
+    ### load in the points of the grid
+    grid.points = mesh.data[:,]
+    ### set the dimensions of the grid
+    grid.dimensions = Nx+1, Ny+1, Nz+1
+
+    grid["materialMesh"] = materialMesh.data[:,0]
+
+    ### any of the mesh properties can be added
+
+    grid["porosity"] = porosity.data[:,0]
+
+
+
+
+
+
+
+    ### Plot the entire model
+
+    p = pv.Plotter()
+
+    p.add_mesh(grid, scalars='materialMesh', cmap='Spectral', opacity=1)
+
+    # p.add_mesh(grid, scalars='porosity', cmap='Spectral', opacity=1)
+
+    #### modify camera view
+
+    # p.camera_position = 'xy'
+    # p.camera.view_angle = 20
+
+    # p.camera_position = [(182.0, 177.0, 50), (139, 105, 19), (-0.2, -0.2, 1)]
+    p.show()
+
+else:
+    pass
+
+
+
+
+
+
+# In[ ]:
+
+
+if uw.mpi.size == 1:
+    #### plot slices
+    p = pv.Plotter()
+
+    slices = grid.slice_along_axis(n=7, axis="y")
+
+    p.add_mesh(grid.outline(), color="k")
+
+    p.add_mesh(slices, scalars='materialMesh', cmap='Spectral', opacity=1)
+
+    # p.add_mesh(slices, scalars='porosity', cmap='Spectral', opacity=1)
+
+    ### modify camera view
+
+    # p.camera_position = 'xy'
+    # p.camera.view_angle = 20
+
+    # p.camera_position = [(182.0, 177.0, 50), (139, 105, 19), (-0.2, -0.2, 1)]
+
+    p.show()
+
+
+
+# ### Setup model properties & solvers
+
+# In[ ]:
 
 
 # +
@@ -706,17 +827,18 @@ gwPressureGrad = gwHydraulicHead.fn_gradient
 gMapFn = -g*rho_water*Storage
 
 
-# %%
+# In[ ]:
 
 
 fn_thermalDiffusivity = thermalDiffusivity*(298.0/temperatureField)**a_exponent
 fn_source = uw.function.math.dot(-1.0*coeff*velocityField, temperatureField.fn_gradient) + heatProductionField
 
 
-# %%
+# In[ ]:
 
 
-# groundwater solver
+### Set up solvers
+### gw solver
 gwadvDiff = uw.systems.SteadyStateDarcyFlow(
                                             velocityField    = velocityField, \
                                             pressureField    = gwHydraulicHead, \
@@ -727,12 +849,11 @@ gwadvDiff = uw.systems.SteadyStateDarcyFlow(
                                             swarmVarVelocity = swarmVelocity)
 
 
-# heatflow solver
+#### heatflow solver
 heateqn = uw.systems.SteadyStateHeat( temperatureField = temperatureField,                                       fn_diffusivity   = fn_thermalDiffusivity,                                       fn_heating       = heatProduction,                                       conditions       = temperatureBC                                       )
 
 
-# %%
-
+# In[ ]:
 
 
 ### solve the groudwater flow
@@ -743,7 +864,7 @@ gwsolver = uw.systems.Solver(gwadvDiff)
 heatsolver = uw.systems.Solver(heateqn)
 
 
-# %%
+# In[ ]:
 
 
 # find model elevation
@@ -753,10 +874,8 @@ topWall_xyz = np.vstack(topWall_xyz)
 # create downsampled interpolator for surface topography
 interp_downsampled = LinearNDInterpolator(topWall_xyz[:,:2], topWall_xyz[:,2])
 
-# topWall_swarm = topo_interp((topWall_xyz[:,1], topWall_xyz[:,0]))
 
-
-# %%
+# In[ ]:
 
 
 def sprinkle_observations(obs_xyz, dz=10.0, return_swarm=False, return_index=False):
@@ -786,7 +905,7 @@ def sprinkle_observations(obs_xyz, dz=10.0, return_swarm=False, return_index=Fal
     return output_tuple
 
 
-# %%
+# In[ ]:
 
 
 def reduce_to_root(vals, particle_index):
@@ -805,10 +924,16 @@ def reduce_to_root(vals, particle_index):
     return vg
 
 
-# %%
+# ### Insert observational datasets
+
+# ##### Insert recharge data
+# - The file name, directory and column headings may need to be changed
+# - The units for the unit conversion may also need to be changed
+
+# In[ ]:
 
 
-# load recharge data
+
 recharge_data = None
 if uw.mpi.rank == 0:
     ti = time()
@@ -857,19 +982,17 @@ if uw.mpi.rank == 0 and verbose:
     print("number of recharge observations = {}".format(recharge_xyz.shape[0]))
     print(f"Time to import recharge observations: {time()-ti} seconds")
 
-
-# %%
-
+# In[ ]:
 
 
-# load gw data
+
 gw_data = None
 
 if uw.mpi.rank == 0:
 
     ti = time()
 
-    gw_data = pd.read_csv(data_dir+"NGIS_groundwater_levels_to_2000_GAB.csv", usecols=(0,3,4,6,7,8,9))
+    gw_data = pd.read_csv(data_dir+"NGIS_groundwater_levels_to_2000_GAB_NEW.csv")
 
 
     ### only use data which has a std value above 0
@@ -894,6 +1017,10 @@ if uw.mpi.rank == 0:
     pointIndex = []
 
     topo = topo_interp((gw_data['northing'], gw_data['easting']))
+
+    gw_data['topo_interp_elevation'] = topo_interp((gw_data['northing'].values, gw_data['easting'].values))
+    gw_data['topo_interp_mesh'] = interp_downsampled(np.c_[gw_data['easting'].values, gw_data['northing'].values])
+
     # topo = interp_downsampled(np.c_[gw_data['easting'].values, gw_data['northing'].values])
 
 
@@ -920,7 +1047,7 @@ if uw.mpi.rank == 0:
 
 
 
-        gwObsPoints_data.append((gw_data[((topo - gw_data['gw_bore_depth']) < top) & ((topo - gw_data['gw_bore_depth']) > bottom)].shape[0]))
+        gwObsPoints_data.append((gw_data[((gw_data['topo_interp_elevation'] - gw_data['gw_bore_depth']) < top) & ((gw_data['topo_interp_elevation'] - gw_data['gw_bore_depth']) > bottom)].shape[0]))
 
 
 
@@ -928,17 +1055,19 @@ if uw.mpi.rank == 0:
 
 
         ### get the index of values that should be in each layer
-        pointIndex.append((gw_data[((topo - gw_data['gw_bore_depth']) < top) & ((topo - gw_data['gw_bore_depth']) > bottom)].index.values))
+        pointIndex.append((gw_data[((gw_data['topo_interp_elevation'] - gw_data['gw_bore_depth']) < top) & ((gw_data['topo_interp_elevation'] - gw_data['gw_bore_depth']) > bottom)].index.values))
 
 
         ### add mat index to df for visualisations
-        gw_data.loc[((topo - gw_data['gw_bore_depth']) < top) & ((topo - gw_data['gw_bore_depth']) > bottom), 'matIndex'] = index
+        gw_data.loc[((gw_data['topo_interp_elevation'] - gw_data['gw_bore_depth']) < top) & ((gw_data['topo_interp_elevation'] - gw_data['gw_bore_depth']) > bottom), 'matIndex'] = index
 
     #### covert list to np array
     pointIndex = np.asarray([y for x in pointIndex for y in x])
 
     ### extract the points for each layer
     gw_data = gw_data[np.isin(gw_data.index.values, pointIndex)]
+
+    gw_data.fillna(0, inplace=True)
 
 
 
@@ -950,17 +1079,22 @@ gw_data = uw.mpi.comm.bcast(gw_data, root=0)
 uw.mpi.comm.barrier()
 
 
-gw_boreID, gw_E, gw_N, gw_elevation, gw_depth, gw_level, gw_level_std = gw_data['ID'], gw_data['easting'].values, gw_data['northing'].values, gw_data['elevation'].values, gw_data['gw_bore_depth'].values, gw_data['gw_level'].values, gw_data['gw_level_std'].values
-
+gw_E, gw_N, gw_elevation, gw_depth, gw_level, gw_level_std = gw_data['easting'].values, gw_data['northing'].values, gw_data['topo_interp_elevation'].values, gw_data['gw_bore_depth'].values, gw_data['gw_level_mean_Neil'].values, gw_data['gw_level_std_Neil'].values
 
 gw_hydraulic_head = gw_elevation - gw_level
-gw_hydraulic_head_std = gw_level_std + 5
+gw_hydraulic_head_std = gw_level_std + 10.
 gw_pressure_head = gw_depth - gw_level
-gw_pressure_head_std = gw_level_std + 5
+gw_pressure_head_std = gw_level_std + 10.
+
+
+gw_data['hydraulic_head'] = gw_hydraulic_head
+gw_data['hydraulic_head_std'] = gw_hydraulic_head_std
+gw_data['pressure_head'] = gw_pressure_head
+gw_data['pressure_head_std'] = gw_pressure_head_std
 
 ### get the initial surface elevation
 # gw_Z = interp_downsampled(np.c_[gw_E, gw_N])
-gw_Z = topo_interp((gw_N, gw_E))
+gw_Z = gw_elevation # topo_interp((gw_N, gw_E))
 
 gw_xyz = np.c_[gw_E, gw_N, gw_Z]
 # gw_xyz, swarm_gw, index_gw = sprinkle_observations(gw_xyz, dz=10., return_swarm=True, return_index=True)
@@ -971,24 +1105,27 @@ gw_xyz[:,2] -= gw_depth
 ### place observation points in the model
 gw_xyz0, swarm_gw0, index_gw0 = sprinkle_observations(gw_xyz, dz=10., return_swarm=True, return_index=True)
 
-topo = topo_interp((gw_data['northing'], gw_data['easting']))
+
+
 
 ### only use points that are close to original points
-gw_xyz = gw_xyz[np.isclose(gw_xyz0[:,2], (topo - gw_data['gw_bore_depth']))]
+gw_xyz = gw_xyz[np.isclose(gw_xyz0[:,2], (gw_data['topo_interp_elevation'] - gw_data['gw_bore_depth']))]
 
-gw_hydraulic_head = gw_hydraulic_head[np.isclose(gw_xyz0[:,2], (topo - gw_data['gw_bore_depth']))]
-gw_hydraulic_head_std = gw_hydraulic_head_std[np.isclose(gw_xyz0[:,2], (topo - gw_data['gw_bore_depth']))]
-gw_pressure_head = gw_pressure_head[np.isclose(gw_xyz0[:,2], (topo - gw_data['gw_bore_depth']))]
-gw_pressure_head_std = gw_pressure_head_std[np.isclose(gw_xyz0[:,2], (topo - gw_data['gw_bore_depth']))]
+gw_data = gw_data[np.isclose(gw_xyz0[:,2], (gw_data['topo_interp_elevation'] - gw_data['gw_bore_depth']))]
 
 
+gw_E, gw_N, gw_elevation, gw_depth, gw_level, gw_level_std = gw_data['easting'].values, gw_data['northing'].values, gw_data['topo_interp_elevation'].values, gw_data['gw_bore_depth'].values, gw_data['gw_level_mean_Neil'].values, gw_data['gw_level_std_Neil'].values
 
+
+gw_hydraulic_head = gw_data['hydraulic_head'].values
+gw_hydraulic_head_std = gw_data['hydraulic_head_std'].values
+gw_pressure_head = gw_data['pressure_head'].values
+gw_pressure_head_std = gw_data['pressure_head_std'].values
 
 uw.mpi.comm.barrier()
 
 if uw.mpi.rank == 0:
     #### save processed gw_data file on root proc
-    gw_data = gw_data[np.isclose(gw_xyz0[:,2], (topo - gw_data['gw_bore_depth']))]
     gw_data.to_csv(simulation_directory + 'gw_obs_data.csv')
 
 uw.mpi.comm.barrier()
@@ -999,10 +1136,43 @@ uw.mpi.comm.barrier()
 gw_xyz, swarm_gw, index_gw = sprinkle_observations(gw_xyz, dz=10., return_swarm=True, return_index=True)
 
 
+
+
 if uw.mpi.rank == 0 and verbose:
     print("number of groundwater pressure observations = {}".format(gw_xyz.shape[0]))
     print(f"Time to import pressure observations: {time()-ti} seconds")
 
+
+
+
+
+
+### save observation locations
+
+xdmf_info_swarm_recharge = swarm_recharge.save(simulation_directory+'swarm_recharge.h5')
+xdmf_info_swarm_gw       = swarm_gw.save(simulation_directory+'swarm_gw.h5')
+
+for save_name, this_swarm, swarm_obs, index_field in [
+        ('recharge', swarm_recharge, recharge_vel, index_recharge),
+        ('pressure_head', swarm_gw, gw_pressure_head, index_gw)]:
+
+    xdmf_info_this_swarm = this_swarm.save(simulation_directory+'swarm_{}.h5'.format(save_name))
+
+    # save obs
+    swarm_obs_var = this_swarm.add_variable( dataType="double", count=1 )
+    swarm_obs_var.data[:] = swarm_obs[index_field > -1].reshape(-1,1)
+    xdmf_info_var = swarm_obs_var.save(simulation_directory+'obs_'+save_name+'.h5')
+    swarm_obs_var.xdmf(simulation_directory+'obs_'+save_name+'.xdmf', xdmf_info_var, save_name,
+                         xdmf_info_this_swarm, 'swarm_{}.h5'.format(save_name))
+
+
+
+
+
+
+# Define what data you want to save during the inverse model run
+
+# In[ ]:
 
 
 initialgwHydraulicHead = gwHydraulicHead.data[:].copy()
@@ -1012,6 +1182,28 @@ def save_ensemble(niter):
     # gwHydraulicHead.save(simulation_directory+'checkpoints/hydraulicHeadField_{:06d}.h5'.format(niter))
     velocityField.save(simulation_directory+'checkpoints/velocityField_{:06d}.h5'.format(niter))
 
+    ### Determine velocity misfit
+    sim_vel = uw.function.math.dot(velocityField, velocityField).evaluate(swarm_recharge)
+    sim_vel = reduce_to_root(sim_vel, index_recharge)
+
+    ### Determine pressure misfit
+    sim_pressure_head = gwHydraulicHead.evaluate(swarm_gw) - zCoordFn.evaluate(swarm_gw)
+    sim_pressure_head = reduce_to_root(sim_pressure_head, index_gw)
+
+    if uw.mpi.rank == 0:
+        np.save(simulation_directory+'checkpoints/pressureMisfit_{:06d}'.format(niter), sim_pressure_head, allow_pickle=False)
+        np.save(simulation_directory+'checkpoints/rechargeMisfit_{:06d}'.format(niter), sim_vel, allow_pickle=False)
+
+
+
+
+
+
+
+# ## define forward model
+# Used to execute the model where variables are generated from the otimisation algorithm chosen.
+
+# In[ ]:
 
 
 def forward_model(x):
@@ -1090,9 +1282,8 @@ def forward_model(x):
 
             # determine mean of cells to produce uniform cells
             fn_hydraulicDiffusivity.data[:,0] = np.repeat((np.mean((np.split(hydraulicDiffusivity0.data[:,0], np.unique(swarm0.owningCell.data[:,0], return_index = True)[1])[1:]), axis=1)), GPC_solver**mesh.dim)
-            thermalDiffusivity.data[:,0] = np.repeat((np.mean((np.split(thermalDiffusivity0.data[:,0], np.unique(swarm0.owningCell.data[:,0], return_index = True)[1])[1:]), axis=1)), GPC_solver**mesh.dim)
-            heatProduction.data[:,0] = np.repeat((np.mean((np.split(heatProduction0.data[:,0], np.unique(swarm0.owningCell.data[:,0], return_index = True)[1])[1:]), axis=1)), GPC_solver**mesh.dim)
-
+            thermalDiffusivity.data[:,0]      = np.repeat((np.mean((np.split(thermalDiffusivity0.data[:,0], np.unique(swarm0.owningCell.data[:,0], return_index = True)[1])[1:]), axis=1)), GPC_solver**mesh.dim)
+            heatProduction.data[:,0]          = np.repeat((np.mean((np.split(heatProduction0.data[:,0], np.unique(swarm0.owningCell.data[:,0], return_index = True)[1])[1:]), axis=1)), GPC_solver**mesh.dim)
 
             ### depth-dependent hydraulic conductivity
 
@@ -1204,36 +1395,6 @@ def forward_model(x):
 
             return misfitType, misfit, velocity_misfit, pressure_misfit, HC_misfit, TC_misfit, HP_misfit
 
-        # misfit = np.array(0.0)
-        ### compare priors
-        # if uw.mpi.rank == 0:
-        #     p_value = 1
-        #     misfitType, misfit, velocity_misfit, pressure_misfit, HC_misfit, TC_misfit, HP_misfit  = LnormMisfit(p=p_value, misfit=misfit)
-        #
-        #     velMisfit.append(velocity_misfit)
-        #     pressureMisfit.append(pressure_misfit)
-        #     HCMisfit.append(HC_misfit)
-        #     totalMisfit.append(misfit)
-        #     # iteration.append(niter)
-        #
-        #     misfitData = pd.DataFrame()
-        #     misfitData['iteration'] = misfitData.index.values
-        #     misfitData['velMisfit'] = velMisfit
-        #     misfitData['pressureMisfit'] = pressureMisfit
-        #     misfitData['HCMisfit'] = HCMisfit
-        #     misfitData['totalMisfit'] = totalMisfit
-        #
-        #     misfitData.to_csv(simulation_directory + str(misfitType) + '-misfitdata.csv')
-        #
-        #     if verbose == True:
-        #         print(f"Misfit Type: {misfitType}")
-        #         print(f'Velocity misfit: {velocity_misfit}')
-        #         print(f'Pressure misfit: {pressure_misfit}')
-        #         print(f'Hydraulic conductivity misfit: {HC_misfit}')
-        #         print(f'Thermal conductivity misfit: {TC_misfit}')
-        #         print(f'Heat production misfit: {HP_misfit}')
-        #
-        #         print(f"Total misfit: {misfit}")
 
         FM_end = time()
 
@@ -1247,6 +1408,17 @@ def forward_model(x):
             p_value = 2
             misfitType, misfit, velocity_misfit, pressure_misfit, HC_misfit, TC_misfit, HP_misfit  = LnormMisfit(p=p_value, misfit=misfit)
 
+            ### load in old values if they exist
+            if os.path.exists(simulation_directory + str(misfitType) + '-misfitdata.csv'):
+                misfitData = pd.read_csv(simulation_directory + str(misfitType) + '-misfitdata.csv', index_col=[0])
+                burninPhase.extend((misfitData['Burnin phase'].values).tolist())
+                velMisfit.extend((misfitData['velMisfit'].values).tolist())
+                pressureMisfit.extend((misfitData['pressureMisfit'].values).tolist())
+                HCMisfit.extend((misfitData['HCMisfit'].values).tolist())
+                totalMisfit.extend((misfitData['totalMisfit'].values).tolist())
+                GWsolverTime.extend((misfitData['GWSolverTime'].values).tolist())
+                FMTime.extend((misfitData['Time'].values).tolist())
+
             velMisfit.append(velocity_misfit)
             pressureMisfit.append(pressure_misfit)
             HCMisfit.append(HC_misfit)
@@ -1259,6 +1431,7 @@ def forward_model(x):
                 burninPhase.append(1)
             else:
                 burninPhase.append(0)
+
 
 
             misfitData = pd.DataFrame()
@@ -1275,16 +1448,6 @@ def forward_model(x):
 
             misfitData.to_csv(simulation_directory + str(misfitType) + '-misfitdata.csv')
 
-            if verbose == True:
-                print(f"Misfit Type: {misfitType}")
-                print(f'Velocity misfit: {velocity_misfit}')
-                print(f'Pressure misfit: {pressure_misfit}')
-                print(f'Hydraulic conductivity misfit: {HC_misfit}')
-                print(f'Thermal conductivity misfit: {TC_misfit}')
-                print(f'Heat production misfit: {HP_misfit}')
-
-                print(f"Total misfit: {misfit}")
-
 
 
 
@@ -1293,16 +1456,6 @@ def forward_model(x):
         comm.Bcast([misfit, MPI.DOUBLE], root=0)
 
 
-
-    #     ### in MH model, discard BURNIN results
-    #     if n_checkpoints == 1 and niter % n_checkpoints == 0 and niter >= BURNIN:
-    # #         # temperatureField.save(data_dir+'checkpoints/temperatureField_{:06d}.h5'.format(niter))
-    #         gwHydraulicHead.save(simulation_directory+'checkpoints/hydraulicHeadField_{:06d}.h5'.format(niter))
-    #         velocityField.save(simulation_directory+'checkpoints/velocityField_{:06d}.h5'.format(niter))
-        #         # if uw.mpi.rank == 0:
-        #             # np.savetxt(simulation_directory + 'kh_{:06d}.txt'.format(niter), kh, delimiter=',')
-        #
-        #
         #### save all results to show how the burnin phase does too
         if uw.mpi.rank == 0:
             with open(simulation_directory+'minimiser_results.csv', 'a') as f:
@@ -1317,8 +1470,13 @@ def forward_model(x):
         return misfit
 
 
-# %%
-def metropolis_hastings(func, x0, nsim, burnin, bounds, x_scale, tempering=0, tune_interval=0, ):
+# ## define Metropolis Hastings model
+# Used to generate the ensemble
+
+# In[ ]:
+
+
+def metropolis_hastings(func, x0, nsim, burnin, bounds, x_scale, tempering=1, tune_interval=0, ):
     """
     MCMC algorithm using a Metropolis-Hastings sampler.
     Evaluates a Markov-Chain for starting values of
@@ -1326,29 +1484,43 @@ def metropolis_hastings(func, x0, nsim, burnin, bounds, x_scale, tempering=0, tu
     ensemble of model realisations.
 
     Args:
+        func : function
+            function to generate and evaluate model, need to return a value to use in the MH algorithm
+        x0 : int
+            range of initial values used to start the MH algorithm.
         nsim : int
             number of simulations
         burnin : int
             number of burn-in simulations before to nsim
-        x_scale: float(4) (optional)
-            scaling factor for new proposals
-            (default=`[1,1,1,1]` for `[beta, zt, dz, C]`)
-        bounds:
+        bounds :
             pass list with the min and max bounds. If no bounds then pass None
-            - see notes
+        x_scale : float
+            scaling factor for new proposals
+        tempering : float
+            used to temper the propability values
+        tune_interval :
+            used to tune the x_scale to maintain an acceptance rate of 20 - 50 %
+
     Returns:
-        X
+        samples, acceptance, misfit_values, accept_rate, xScale
     """
     x0 = np.array(x0)
     size = len(x_scale)
-    samples = np.empty((nsim, size))
-    acceptance = np.zeros((nsim, 1))
-    accept_rate = np.empty((nsim, 1))
-    misfit_values = np.empty((nsim, 1))
-    xScale = np.empty((nsim, 1))
+
+    #### use nan values so NaN can be dropped easily if an error occurs during the model run
+    samples = np.zeros((nsim, size))*np.nan
+    acceptance = np.zeros((nsim, 1))*np.nan
+    accept_rate = np.zeros((nsim, 1))*np.nan
+    misfit_values = np.zeros((nsim, 1))*np.nan
+    xScale = np.zeros((nsim, 1))*np.nan
+
+    global niter, naccept
 
     misfit0 = func(x0)
     P0 = np.exp(-misfit0 / tempering)
+
+    ### remove niter added in the initial model run
+    niter -= 1
 
     # Burn-in phase
     for i in range(burnin):
@@ -1371,7 +1543,7 @@ def metropolis_hastings(func, x0, nsim, burnin, bounds, x_scale, tempering=0, tu
 
         # evaluate proposal probability + tempering
         misfit1 = func(x1)
-        P1 = np.exp(-misfit1 / tempering)
+        P1 = np.exp(-misfit1 / 10e3)
 
         # iterate towards MAP estimate
         if P1 > P0:
@@ -1379,10 +1551,17 @@ def metropolis_hastings(func, x0, nsim, burnin, bounds, x_scale, tempering=0, tu
             P0 = P1
             misfit0 = misfit1
 
+    ### remove niter added in the burnin phase
+    niter -= burnin
+
     # misfit0 = func(x0)
     # P0 = np.exp(-misfit0 / 10e3)
 
-    naccept = 0
+
+    ### save the initial field
+    if restart == False and n_checkpoints == 1:
+        save_ensemble(niter)
+
 
     # Now sample posterior
     for i in range(nsim):
@@ -1456,6 +1635,7 @@ def metropolis_hastings(func, x0, nsim, burnin, bounds, x_scale, tempering=0, tu
 
 
         if randProbability <= P:
+        ### update values if the proposed values are accepted
             x0 = x1
             P0 = P1
             misfit0 = misfit1
@@ -1463,55 +1643,73 @@ def metropolis_hastings(func, x0, nsim, burnin, bounds, x_scale, tempering=0, tu
             naccept += 1
             #### only save the accepted values
             if n_checkpoints == 1:
-                save_ensemble(i)
+                save_ensemble(niter)
+        else:
+            acceptance[i] = 0
 
 
 
         misfit_values[i] = misfit0
         samples[i] = x0
-        accept_rate[i] = naccept / (i+1)
+        accept_rate[i] = naccept / niter
+
+        ''' fail-safe to save the data if the model stops mid-run '''
+        if uw.mpi.rank == 0:
+            MHrun = pd.DataFrame()
+
+            for i in matIndex:
+                MHrun[str(i)] = samples[:,i]
+
+            MHrun['acceptance'] = acceptance
+            MHrun['acceptance rate'] = accept_rate
+            MHrun['misfit'] = misfit_values
+            MHrun['x_scale'] = xScale
+
+
+            ### if it is a restart, concat old and new frames together then save
+            if restart == True:
+                MH_concat = pd.concat([MH_data, MHrun], axis=0, ignore_index=True)
+                MH_concat.to_csv(simulation_directory + 'MH_output.csv')
+            #### if not a restart then save the df
+            else:
+                MHrun.to_csv(simulation_directory + 'MH_output.csv')
+
+        else:
+            pass
 
     return samples, acceptance, misfit_values, accept_rate, xScale
 
 
-# %%
+# #### Initialise x values to be used in the optimisation
 
-
+# In[ ]:
 
 
 if hydraulicConductivityOnly == True:
-    x = np.hstack([np.log10(kh0)])
-    # define bounded optimisation
-    bounds_lower = np.hstack([
-        np.full_like(kh0, -15)])
-    bounds_upper = np.hstack([
-        np.full_like(kh0, -3)])
-    bounds = list(zip(bounds_lower, bounds_upper))
+    if restart == False:
+        x = np.hstack([np.log10(kh0)])
+    elif restart == True:
+        x = restart_vales
 else:
-    x = np.hstack([np.log10(kh0), kt0, H0*1e6, [Tmax]])
-    # define bounded optimisation
-    bounds_lower = np.hstack([
-        np.full_like(kh0, -15),
-        np.full_like(kt0, 0.05),
-        np.zeros_like(H0),
-        [298.]])
-    bounds_upper = np.hstack([
-        np.full_like(kh0, -3),
-        np.full_like(kt0, 6.0),
-        np.full_like(H0, 10),
-        [600+273.14]])
+    if restart == False:
+        x = np.hstack([np.log10(kh0), kt0, H0*1e6, [Tmax]])
+    elif restart == True:
+            x = restart_vales
 
-    bounds = list(zip(bounds_lower, bounds_upper))
 
 
 dx = 0.01*x
-# -
 
-# ## Initialise output table
+
+#
+#
+# ### Initialise output table
 #
 # A place to store misfit and $x$ parameters.
 
-# +
+# In[ ]:
+
+
 import os
 
 if "minimiser_results.csv" in os.listdir(simulation_directory):
@@ -1531,21 +1729,9 @@ else:
 mintree = cKDTree(minimiser_results)
 
 
+# In[ ]:
 
 
-
-
-
-
-# finite_diff_step = np.hstack([np.full_like(kh0, 0.1), np.full_like(kt0, 0.01), np.full_like(H0, 0.01), [1.0]])
-
-# def obj_func(x):
-#     return forward_model(x)
-# def obj_grad(x):
-#     return optimize.approx_fprime(x, forward_model, finite_diff_step)
-
-
-# %%
 
 velMisfit      = []
 pressureMisfit = []
@@ -1556,14 +1742,6 @@ FMTime         = []
 GWsolverTime   = []
 burninPhase    = []
 
-
-niter = 0
-
-# +
-#### test forward model
-# fm0 = forward_model(x)
-# fm1 = forward_model(x+dx)
-# print("finite difference = {}".format(fm1-fm0))
 
 
 #
@@ -1584,8 +1762,9 @@ niter = 0
 #     fprime_df.to_csv(simulation_directory + 'fprime_data.csv')
 
 
-# %%
+# #### Different optimisation schemes that can be used
 
+# In[ ]:
 
 
 # ### differential evolution
@@ -1600,57 +1779,46 @@ niter = 0
 # res = optimize.basinhopping(forward_model, x0=x, minimizer_kwargs=basinhopping_kwargs, seed=42, niter=1000)
 
 
+# ### Initialisation of MH algorithm
+
+# In[ ]:
+
 
 
 # ### metropolis hastings
 samples, acceptance, misfit_values, accept_rate, xScale = metropolis_hastings(func=forward_model, x0=x, nsim=NSIM, burnin=BURNIN, x_scale=sigma*np.ones_like(x), bounds=[-15,-3], tempering=TEMPERING, tune_interval=tune_interval, )
 
-if uw.mpi.rank ==0:
-    MH_results = pd.DataFrame()
-    ### loop over matIndex to create a df with all the samples
-    for i in matIndex:
-        MH_results[str(i)] = samples[:,i]
-
-    MH_results['acceptance'] = acceptance
-    MH_results['acceptance rate'] = accept_rate
-    MH_results['misfit'] = misfit_values
-    MH_results['x_scale'] = xScale
-
-    ### if file exists, load in previous run and add frames together
-    if os.path.exists(simulation_directory + 'MH_output.csv'):
-        MH_results0 = pd.read_csv(simulation_directory + 'MH_output.csv')
-
-        MH_results = pd.concat(MH_results0, MH_results, ignore_index=True)
-
-    MH_results.to_csv(simulation_directory + 'MH_output.csv')
-
-
-
-
-# print(res)
+# ### Save output from MH algorithm
+# if uw.mpi.rank ==0:
+#     MH_results = pd.DataFrame()
+#     ### loop over matIndex to create a df with all the samples
+#     for i in matIndex:
+#         MH_results[str(i)] = samples[:,i]
 #
+#     MH_results['acceptance'] = acceptance
+#     MH_results['acceptance rate'] = accept_rate
+#     MH_results['misfit'] = misfit_values
+#     MH_results['x_scale'] = xScale
 #
+#     ### save the data again from the current model run
+#     MH_results.to_csv(simulation_directory + 'MH_data.csv')
 #
+#     ### if file doesn't exist, write the file
+#     if not os.path.exists(simulation_directory + 'MH_output.csv'):
+#         MH_results.to_csv(simulation_directory + 'MH_output.csv')
 #
-
-saveDataStart = time()
-
-
-
-# if uw.mpi.rank == 0:
-#     np.savez_compressed(data_dir+"optimisation_result.npz", **res)
+#     ### if file exists, load in previous run and add frames together
+#     elif os.path.exists(simulation_directory + 'MH_output.csv'):
+#         MH_concat = pd.concat([MH_data, MH_results], axis=0, ignore_index=True)
+#         MH_concat.to_csv(simulation_directory + 'MH_output.csv')
 
 
-# Save data outputs
-
-# %%
 
 
-# xdmf_info_mesh  = mesh.save(simulation_directory+'mesh.h5')
-# xdmf_info_swarm = swarm.save(simulation_directory+'swarm.h5')
 
-# xdmf_info_matIndex = materialIndex.save(simulation_directory+'materialIndex.h5')
-# materialIndex.xdmf(simulation_directory+'materialIndex.xdmf', xdmf_info_matIndex, 'materialIndex', xdmf_info_swarm, 'TheSwarm')
+# ### Save data outputs
+
+# In[ ]:
 
 
 # # dummy mesh variable
@@ -1672,76 +1840,24 @@ saveDataStart = time()
 # pressureField.data[:] -= zCoordFn.evaluate(mesh)
 
 
-# for xdmf_info,save_name,save_object in [(xdmf_info_mesh, 'velocityField', velocityField),
-#                                         (xdmf_info_mesh, 'hydraulicHeadField', gwHydraulicHead),
-#                                         (xdmf_info_mesh, 'pressureField', pressureField),
-#                                         (xdmf_info_mesh, 'temperatureField', temperatureField),
-#                                         # (xdmf_info_mesh, 'heatflowField', heatflowField),
-#                                         (xdmf_info_mesh, 'rankField', rankField),
-#                                         (xdmf_info_mesh, 'materialMesh', materialMesh),
-#                                         (xdmf_info_swarm, 'materialIndexSwarm', materialIndex),
-#                                         (xdmf_info_swarm, 'hydraulicDiffusivitySwarm', fn_hydraulicDiffusivity),
-#                                         # (xdmf_info_swarm, 'thermalDiffusivitySwarm', thermalDiffusivity),
-#                                         # (xdmf_info_swarm, 'heatProductionSwarm', heatProduction),
-#                                         ]:
-
-#     xdmf_info_var = save_object.save(simulation_directory+save_name+'.h5')
-#     save_object.xdmf(simulation_directory+save_name+'.xdmf', xdmf_info_var, save_name, xdmf_info, 'TheMesh')
-
-#     if save_name.endswith("Swarm"):
-#         # project swarm variables to the mesh
-#         hydproj = uw.utils.MeshVariable_Projection(phiField, save_object, swarm)
-#         hydproj.solve()
-
-#         field_name = save_name[:-5]+'Field'
-#         xdmf_info_var = phiField.save(simulation_directory+field_name+'.h5')
-#         phiField.xdmf(simulation_directory+field_name+'.xdmf', xdmf_info_var, field_name, xdmf_info_mesh, "TheMesh")
-
-# # +
-# # xdmf_info_swarm_dTdz     = swarm_dTdz.save(data_dir+'swarm_dTdz.h5')
-# xdmf_info_swarm_recharge = swarm_recharge.save(simulation_directory+'swarm_recharge.h5')
-# xdmf_info_swarm_gw       = swarm_gw.save(simulation_directory+'swarm_gw.h5')
-
-# # interpolate to swarm variables (again)
-# # sim_dTdz = temperatureField.fn_gradient[2].evaluate(swarm_dTdz)
-# sim_vel = uw.function.math.dot(velocityField, velocityField).evaluate(swarm_recharge)
-# sim_pressure_head = gwHydraulicHead.evaluate(swarm_gw) - zCoordFn.evaluate(swarm_gw)
 
 
-# for save_name, this_swarm, swarm_obs, swarm_sim, index_field in [
-# #         ('dTdz', swarm_dTdz, well_dTdz, sim_dTdz, index_dTdz),
-#         ('recharge', swarm_recharge, recharge_vel, sim_vel, index_recharge),
-#         ('pressure_head', swarm_gw, gw_pressure_head, sim_pressure_head, index_gw)]:
-
-#     xdmf_info_this_swarm = this_swarm.save(simulation_directory+'swarm_{}.h5'.format(save_name))
-
-#     # save obs
-#     swarm_obs_var = this_swarm.add_variable( dataType="double", count=1 )
-#     swarm_obs_var.data[:] = swarm_obs[index_field > -1].reshape(-1,1)
-#     xdmf_info_var = swarm_obs_var.save(simulation_directory+'obs_'+save_name+'.h5')
-#     swarm_obs_var.xdmf(simulation_directory+'obs_'+save_name+'.xdmf', xdmf_info_var, save_name,
-#                          xdmf_info_this_swarm, 'swarm_{}.h5'.format(save_name))
-
-#     # save sim
-#     swarm_sim_var = this_swarm.add_variable( dataType="double", count=1 )
-#     swarm_sim_var.data[:] = swarm_sim.reshape(-1,1)
-#     xdmf_info_var = swarm_sim_var.save(simulation_directory+'sim_'+save_name+'.h5')
-#     swarm_sim_var.xdmf(simulation_directory+'sim_'+save_name+'.xdmf', xdmf_info_var, save_name,
-#                          xdmf_info_this_swarm, 'swarm_{}.h5'.format(save_name))
-# -
 
 # ## Save minimiser results
 
 
 
 
+# #### Timing data to assess model performance
+# Intended to be used to determine how long an inversion will take
 
-# %%
+# In[ ]:
+
+
 endTiming = time()
 
 if uw.mpi.rank == 0:
     scriptTiming = endTiming - startTiming
-    saveDataTiming = endTiming - saveDataStart
     solverTiming = sum(FMTime) / len(FMTime)
 
 
@@ -1749,9 +1865,8 @@ if uw.mpi.rank == 0:
     timingData[:,0] = (Nx*Ny*Nz)
     timingData[:,1] = (GPC_solver**3)
     timingData[:,2] = (Nx*Ny*Nz*(GPC_solver**3))
-    timingData[:,3] = saveDataTiming
-    timingData[:,4] = solverTiming
-    timingData[:,5] = scriptTiming
+    timingData[:,3] = solverTiming
+    timingData[:,4] = scriptTiming
 
 
     ### save results to df in sim directory
@@ -1761,10 +1876,12 @@ if uw.mpi.rank == 0:
     timing_data['totalCells'] = timingData[:,0]
     timing_data['particlesPerCell'] = timingData[:,1]
     timing_data['totalParticles'] = timingData[:,2]
-    timing_data['scriptTime'] = timingData[:,5]
-    timing_data['solverTime'] = timingData[:,4]
-    timing_data['saveDataTime'] = timingData[:,3]
+    timing_data['solverTime'] = timingData[:,3]
+    timing_data['scriptTime'] = timingData[:,4]
+    timing_data['iterations'] = NSIM
+
 
     timing_data.to_csv(simulation_directory + 'timing_data.csv')
 
-# %%
+
+# In[ ]:
